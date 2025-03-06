@@ -1,4 +1,12 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:js/js.dart';
+import 'package:js/js_util.dart';
+
+@JS('startRecording')
+external dynamic startRecording();
+
+@JS('stopRecording')
+external void stopRecording();
 
 // Events
 abstract class RecordingEvent {}
@@ -14,17 +22,30 @@ class RecordingInitial extends RecordingState {}
 
 class RecordingInProgress extends RecordingState {}
 
+class RecordingError extends RecordingState {
+  final String message;
+
+  RecordingError(this.message);
+}
+
 // BLoC
 class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
-  RecordingBloc() : super(RecordingInitial());
+  RecordingBloc() : super(RecordingInitial()) {
+    on<StartRecording>(_onStartRecording);
+    on<StopRecording>(_onStopRecording);
+  }
 
-  Stream<RecordingState> mapEventToState(RecordingEvent event) async* {
-    if (event is StartRecording) {
-      yield RecordingInProgress();
-      // Add logic to start recording
-    } else if (event is StopRecording) {
-      yield RecordingInitial();
-      // Add logic to stop recording
+  Future<void> _onStartRecording(StartRecording event, Emitter<RecordingState> emit) async {
+    emit(RecordingInProgress());
+    try {
+      await promiseToFuture(startRecording());
+    } catch (error) {
+      emit(RecordingError("Failed to start recording: ${error.toString()}"));
     }
+  }
+
+  void _onStopRecording(StopRecording event, Emitter<RecordingState> emit) {
+    emit(RecordingInitial());
+    stopRecording();
   }
 }

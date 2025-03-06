@@ -29,6 +29,12 @@ class RecordingControls extends StatelessWidget {
         children: [
           BlocBuilder<RecordingBloc, RecordingState>(
             builder: (context, state) {
+              if (state is RecordingError) {
+                return Text(
+                  state.message,
+                  style: TextStyle(color: Colors.red, fontSize: 24),
+                );
+              }
               return Text(
                 state is RecordingInProgress ? 'Recording...' : 'Not Recording',
                 style: TextStyle(fontSize: 24),
