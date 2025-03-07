@@ -1,5 +1,11 @@
 let mediaRecorder;
+let micStream;
+let systemStream;
 let audioChunks = [];
+let audioBuffer = []; // Temporary buffer for accumulating audio data
+const MAX_CHUNK_SIZE = 25 * 1024 * 1024; // 25 MB in bytes
+let currentBufferSize = 0;
+const MIME_TYPE = 'audio/webm';
 
 function requestAudioPermissions() {
     return navigator.mediaDevices.getUserMedia({ audio: true })
@@ -25,7 +31,7 @@ function requestSystemAudioPermissions() {
         return Promise.reject(new Error("getDisplayMedia is not supported"));
     }
 
-    return navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+    return navigator.mediaDevices.getDisplayMedia({ audio: true })
         .then(stream => {
             console.log("System audio permission granted.");
             return stream;
@@ -43,55 +49,79 @@ function requestSystemAudioPermissions() {
         });
 }
 
-function startRecording() {
-    return requestAudioPermissions()
-        .then(micStream => {
-            return requestSystemAudioPermissions()
-                .then(systemStream => {
-                    const combinedStream = new MediaStream([
-                        ...micStream.getTracks(),
-                        ...systemStream.getTracks()
-                    ]);
-                    mediaRecorder = new MediaRecorder(combinedStream);
-                    mediaRecorder.start();
+function createChunk() {
+    if (audioBuffer.length > 0) {
+        const chunkBlob = new Blob(audioBuffer, { type: MIME_TYPE });
+        audioChunks.push(chunkBlob);
+        audioBuffer = [];
+        currentBufferSize = 0;
+    }
+}
 
-                    mediaRecorder.ondataavailable = event => {
-                        audioChunks.push(event.data);
-                    };
+async function startRecording() {
+    console.log("startRecording() called.");
 
-                    return new Promise(resolve => {
-                        mediaRecorder.onstop = () => {
-                            const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                            audioChunks = [];
-                            resolve(audioBlob);
-                        };
-                    });
-                })
-                .catch(systemAudioError => {
-                    console.warn("System audio capture failed, using only microphone: ", systemAudioError);
-                    mediaRecorder = new MediaRecorder(micStream);
-                    mediaRecorder.start();
+    try {
+        micStream = await requestAudioPermissions();
+        console.log("Microphone stream obtained:", micStream);
 
-                    mediaRecorder.ondataavailable = event => {
-                        audioChunks.push(event.data);
-                    };
+        systemStream = await requestSystemAudioPermissions();
+        console.log("System audio stream obtained:", systemStream);
 
-                    return new Promise(resolve => {
-                        mediaRecorder.onstop = () => {
-                            const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                            audioChunks = [];
-                            resolve(audioBlob);
-                        };
-                    });
-                });
-        })
-        .catch(error => {
-            return Promise.reject(error);
+        const audioContext = new AudioContext();
+        const destination = audioContext.createMediaStreamDestination();
+
+        const micSource = audioContext.createMediaStreamSource(micStream);
+        const systemSource = audioContext.createMediaStreamSource(systemStream);
+
+        micSource.connect(destination);
+        systemSource.connect(destination);
+
+        const combinedStream = destination.stream;
+        console.log("Combined Stream:", combinedStream);
+
+        combinedStream.getTracks().forEach(track => {
+            console.log(`Track kind: ${track.kind}, enabled: ${track.enabled}`);
         });
+
+        mediaRecorder = new MediaRecorder(combinedStream, { mimeType: MIME_TYPE });
+        console.log("Combined MediaRecorder created:", mediaRecorder);
+        mediaRecorder.start();
+        console.log("Combined MediaRecorder started.");
+
+        mediaRecorder.ondataavailable = event => {
+            console.log("Data available from MediaRecorder:", event.data);
+            audioBuffer.push(event.data);
+            currentBufferSize += event.data.size;
+
+            if (currentBufferSize >= MAX_CHUNK_SIZE) {
+                createChunk();
+            }
+        };
+
+        return new Promise(resolve => {
+            mediaRecorder.onstop = () => {
+                createChunk(); // Create a final chunk from any remaining data
+                console.log("Recording stopped, resolving with audio chunks.");
+                resolve(audioChunks); // Resolve with the array of fixed-size chunks
+            };
+        });
+    } catch (error) {
+        console.error("Error starting recording: ", error);
+        return Promise.reject(error);
+    }
 }
 
 function stopRecording() {
     if (mediaRecorder) {
         mediaRecorder.stop();
+    }
+
+    if (micStream) {
+        micStream.getTracks().forEach(track => track.stop());
+    }
+
+    if (systemStream) {
+        systemStream.getTracks().forEach(track => track.stop());
     }
 }

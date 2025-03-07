@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
-import 'screens/home_screen.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:meeting_analyzer/screens/home_screen.dart';
 
-void main() {
-  runApp(MeetingAnalyzerApp());
+void main() async {
+  await dotenv.load(fileName: ".env");
+  runApp(MyApp());
 }
 
-class MeetingAnalyzerApp extends StatelessWidget {
-  const MeetingAnalyzerApp({super.key});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
