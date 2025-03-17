@@ -74,8 +74,16 @@ async function startRecording() {
         const micSource = audioContext.createMediaStreamSource(micStream);
         const systemSource = audioContext.createMediaStreamSource(systemStream);
 
-        micSource.connect(destination);
-        systemSource.connect(destination);
+        // Use Merger to divide mic and system sources by separate channels
+        const merger = audioContext.createChannelMerger(2);
+        micSource.connect(merger, 0, 0);
+        systemSource.connect(merger, 0, 1);
+
+        merger.connect(destination);
+
+        // Comment out two lines bellow and comment in Merger code above to avoid dividing channels
+        // micSource.connect(destination);
+        // systemSource.connect(destination);
 
         const combinedStream = destination.stream;
         console.log("Combined Stream:", combinedStream);
