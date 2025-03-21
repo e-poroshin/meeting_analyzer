@@ -3,7 +3,7 @@ let micStream;
 let systemStream;
 let audioChunks = [];
 let audioBuffer = []; // Temporary buffer for accumulating audio data
-const MAX_CHUNK_SIZE = 25 * 1024 * 1024; // 25 MB in bytes
+const MAX_CHUNK_SIZE = 500 * 1024 * 1024; // 500 MB in bytes
 let currentBufferSize = 0;
 const MIME_TYPE = 'audio/webm';
 

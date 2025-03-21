@@ -35,62 +35,49 @@ class SendAudioChunk extends RecordingEvent {
 }
 
 // States
-abstract class RecordingState {}
+abstract class BaseState {}
 
-class SignedInState extends RecordingState {
+class Unauthorized extends BaseState {}
+
+abstract class Authorized extends BaseState {}
+
+class AuthInitial extends Authorized {
   final String userEmail;
   final String accessToken;
 
-  SignedInState(this.userEmail, this.accessToken);
+  AuthInitial(this.userEmail, this.accessToken);
 }
 
-class SignedOutState extends RecordingState {}
+class RecordingInProgress extends Authorized {}
 
-class RecordingInitial extends RecordingState {}
+class TranscriptionReceived extends Authorized {
+  final String transcription;
 
-class RecordingInProgress extends RecordingState {}
-
-class RecordingChunkCreated extends RecordingState {
-  final int chunkIndex;
-  final int totalChunks;
-
-  RecordingChunkCreated(this.chunkIndex, this.totalChunks);
+  TranscriptionReceived(this.transcription);
 }
 
-class RecordingChunkUploaded extends RecordingState {
-  final int chunkIndex;
-  final int totalChunks;
-
-  RecordingChunkUploaded(this.chunkIndex, this.totalChunks);
-}
-
-class RecordingError extends RecordingState {
+class RecordingError extends Authorized {
   final String message;
 
   RecordingError(this.message);
 }
 
-class RecordingTranscriptionReceived extends RecordingState {
-  final String transcription;
-
-  RecordingTranscriptionReceived(this.transcription);
-}
+class Processing extends Authorized {}
 
 // BLoC
-class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
-  String _currentTranscription = '';
+class RecordingBloc extends Bloc<RecordingEvent, BaseState> {
   final GoogleSignIn _googleSignIn = GoogleSignIn(
     clientId:
         '407746587233-ci1jpdaupb8g5h7ho8854eio5v0egppo.apps.googleusercontent.com',
     scopes: [
       'https://www.googleapis.com/auth/devstorage.read_write',
       'https://www.googleapis.com/auth/cloud-platform',
-      // Add this scope for Speech-to-Text API
     ],
   );
+  String _currentTranscription = '';
   String? _accessToken;
 
-  RecordingBloc() : super(RecordingInitial()) {
+  RecordingBloc() : super(Unauthorized()) {
     on<StartRecording>(_onStartRecording);
     on<StopRecording>(_onStopRecording);
     on<SendAudioChunk>(_onSendAudioChunk);
@@ -102,7 +89,7 @@ class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
   }
 
   @override
-  void onTransition(Transition<RecordingEvent, RecordingState> transition) {
+  void onTransition(Transition<RecordingEvent, BaseState> transition) {
     super.onTransition(transition);
     print('Transition: ${transition.currentState} -> ${transition.nextState}');
   }
@@ -112,19 +99,19 @@ class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
     if (account != null) {
       final auth = await account.authentication;
       _accessToken = auth.accessToken;
-      emit(SignedInState(account.email, auth.accessToken!));
+      emit(AuthInitial(account.email, auth.accessToken!));
     } else {
-      emit(SignedOutState());
+      emit(Unauthorized());
     }
   }
 
-  Future<void> _onSignIn(SignIn event, Emitter<RecordingState> emit) async {
+  Future<void> _onSignIn(SignIn event, Emitter<BaseState> emit) async {
     try {
       final account = await _googleSignIn.signIn();
       if (account != null) {
         final auth = await account.authentication;
         _accessToken = auth.accessToken;
-        emit(SignedInState(account.email, auth.accessToken!));
+        emit(AuthInitial(account.email, auth.accessToken!));
       }
     } catch (error) {
       print('Error signing in: ${error.toString()}');
@@ -132,15 +119,15 @@ class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
     }
   }
 
-  Future<void> _onSignOut(SignOut event, Emitter<RecordingState> emit) async {
+  Future<void> _onSignOut(SignOut event, Emitter<BaseState> emit) async {
     await _googleSignIn.signOut();
     _accessToken = null;
-    emit(SignedOutState());
+    emit(Unauthorized());
   }
 
   Future<void> _onStartRecording(
     StartRecording event,
-    Emitter<RecordingState> emit,
+    Emitter<BaseState> emit,
   ) async {
     if (_accessToken == null) {
       emit(RecordingError('Please sign in first'));
@@ -155,7 +142,6 @@ class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
       print("Received $totalChunks audio chunks from JavaScript."); // Debug log
 
       for (int i = 0; i < totalChunks; i++) {
-        emit(RecordingChunkCreated(i + 1, totalChunks));
         final chunk = chunks[i];
         print("Processing chunk $i"); // Debug log
 
@@ -174,13 +160,14 @@ class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
     }
   }
 
-  void _onStopRecording(StopRecording event, Emitter<RecordingState> emit) {
+  void _onStopRecording(StopRecording event, Emitter<BaseState> emit) {
+    emit(Processing());
     stopRecording();
   }
 
   Future<void> _onSendAudioChunk(
     SendAudioChunk event,
-    Emitter<RecordingState> emit,
+    Emitter<BaseState> emit,
   ) async {
     await _uploadChunk(
       event.chunkBytes,
@@ -194,19 +181,20 @@ class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
     List<int> chunkBytes,
     int chunkIndex,
     int totalChunks,
-    Emitter<RecordingState> emit,
+    Emitter<BaseState> emit,
   ) async {
     try {
       if (_accessToken == null) {
         throw Exception('Not authenticated');
       }
 
-      print("Uploading chunk $chunkIndex of $totalChunks.");
+      // Check if the token is expired and refresh if necessary
+      await _refreshAccessToken();
 
+      print("Uploading chunk $chunkIndex of $totalChunks.");
       const String projectId = 'triple-kingdom-453012-b0';
       const String bucketName = 'meeting-analyzer-bucket';
       const String location = 'global';
-      const String recognizer = 'myrecognizer3';
       String filename =
           "${DateTime.now().microsecondsSinceEpoch.toString()}.webm";
       String contentType = "audio/webm";
@@ -237,23 +225,20 @@ class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
 
         try {
           final speechToTextUrl =
-              'https://speech.googleapis.com/v2/projects/$projectId/locations/$location/recognizers/$recognizer:recognize';
+              'https://speech.googleapis.com/v2/projects/$projectId/locations/$location/recognizers/_:recognize';
 
           final speechToTextRequestBody = {
-            // "config": {
-            //   "model": "long",
-            //   "languageCodes": ["en-US"],
-            //   "features": {
-            //     "enableWordConfidence": false,
-            //     "enableWordTimeOffsets": false,
-            //     "enableAutomaticPunctuation": true,
-            //     "diarizationConfig": {
-            //       "minSpeakerCount": 1,
-            //       "maxSpeakerCount": 6,
-            //     },
-            //   },
-            //   "autoDecodingConfig": {},
-            // },
+            "config": {
+              "model": "long",
+              "languageCodes": ["en-US", "ru-RU"],
+              "autoDecodingConfig": {},
+              "features": {
+                "enableWordConfidence": false,
+                "enableWordTimeOffsets": false,
+                "enableAutomaticPunctuation": true,
+                "multiChannelMode": "SEPARATE_RECOGNITION_PER_CHANNEL",
+              },
+            },
             "uri": gcsUri,
           };
 
@@ -266,7 +251,6 @@ class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
             headers: {
               "Authorization": "Bearer $_accessToken",
               "Content-Type": "application/json",
-              // "Accept": "application/json",
             },
             body: json.encode(speechToTextRequestBody),
           );
@@ -276,7 +260,6 @@ class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
           );
 
           if (speechToTextResponse.statusCode == 200) {
-            emit(RecordingChunkUploaded(chunkIndex, totalChunks));
             final Map<String, dynamic> results = json.decode(
               speechToTextResponse.body,
             );
@@ -286,38 +269,43 @@ class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
 
             // Process the results
             if (results.containsKey('results')) {
-                for (var result in results['results']) {
-                    int channelTag = result['channelTag'];
-                    String transcript = result['alternatives'][0]['transcript'];
-                    String endOffsetString = result['resultEndOffset'];
+              for (var result in results['results']) {
+                int channelTag = result['channelTag'];
+                String transcript = result['alternatives'][0]['transcript'];
+                String endOffsetString = result['resultEndOffset'];
 
-                    // Convert endOffset from string to double (remove 's' and parse)
-                    double endOffset = double.parse(endOffsetString.replaceAll('s', ''));
+                // Convert endOffset from string to double (remove 's' and parse)
+                double endOffset = double.parse(
+                  endOffsetString.replaceAll('s', ''),
+                );
 
-                    // Add the result to the list with channelTag and endOffset
-                    sortedResults.add({
-                        'channelTag': channelTag,
-                        'transcript': transcript,
-                        'endOffset': endOffset,
-                    });
-                }
+                // Add the result to the list with channelTag and endOffset
+                sortedResults.add({
+                  'channelTag': channelTag,
+                  'transcript': transcript,
+                  'endOffset': endOffset,
+                });
+              }
             }
 
             // Sort the results by resultEndOffset
-            sortedResults.sort((a, b) => a['endOffset'].compareTo(b['endOffset']));
+            sortedResults.sort(
+              (a, b) => a['endOffset'].compareTo(b['endOffset']),
+            );
 
             // Prepare the final formatted transcription output
             String formattedTranscription = '';
             for (var result in sortedResults) {
-                int channel = result['channelTag'];
-                String transcript = result['transcript'];
+              int channel = result['channelTag'];
+              String transcript = result['transcript'];
 
-                // Append the transcript to the formatted output
-                formattedTranscription += "Speaker $channel: $transcript\n";
+              // Append the transcript to the formatted output
+              formattedTranscription += "Speaker $channel: $transcript\n";
             }
-
-            _currentTranscription = formattedTranscription.trim();
-            emit(RecordingTranscriptionReceived(_currentTranscription));
+            //
+            _currentTranscription = formattedTranscription.trim(); //"Done"; //
+            emit(TranscriptionReceived(_currentTranscription));
+            //
           } else {
             print(
               "Failed with speechToText request $chunkIndex: ${speechToTextResponse.statusCode}, ${speechToTextResponse.body}",
@@ -340,11 +328,11 @@ class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
         }
       } else {
         print(
-          "Failed to upload chunk to Google Cloud Storage $chunkIndex: ${cloudStorageResponse.statusCode}, ${cloudStorageResponse.body}",
+          "Failed to upload chunk $chunkIndex to Google Cloud Storage: ${cloudStorageResponse.statusCode}, ${cloudStorageResponse.body}",
         );
         emit(
           RecordingError(
-            'Failed to upload chunk to Google Cloud Storage $chunkIndex: ${cloudStorageResponse.statusCode}, ${cloudStorageResponse.body}',
+            'Failed to upload chunk $chunkIndex to Google Cloud Storage: ${cloudStorageResponse.statusCode}, ${cloudStorageResponse.body}',
           ),
         );
       }
@@ -358,92 +346,20 @@ class RecordingBloc extends Bloc<RecordingEvent, RecordingState> {
     }
   }
 
-  Future<void> _checkTranscriptionStatus(
-    String operationName,
-    Emitter<RecordingState> emit,
-  ) async {
-    bool isComplete = false;
-    int attempts = 0;
-    const maxAttempts = 300;
-    const pollInterval = Duration(seconds: 3);
-
-    print(
-      "Starting to check transcription status for operation: $operationName",
-    );
-
-    while (!isComplete && attempts < maxAttempts) {
-      try {
-        print("Attempt ${attempts + 1} of $maxAttempts to check status...");
-
-        final response = await http.get(
-          Uri.parse(
-            'https://speech.googleapis.com/v1/operations/$operationName',
-          ),
-          headers: {
-            "Authorization": "Bearer $_accessToken",
-            "Content-Type": "application/json",
-          },
-        );
-
-        print("Received response status: ${response.statusCode}");
-
-        if (response.statusCode == 200) {
-          final Map<String, dynamic> operationResponse = json.decode(
-            response.body,
-          );
-          print("Operation response: ${json.encode(operationResponse)}");
-
-          if (operationResponse.containsKey('done') &&
-              operationResponse['done'] == true) {
-            print("Transcription operation is complete.");
-
-            if (operationResponse.containsKey('response')) {
-              final results = operationResponse['response'];
-              String formattedTranscription = '';
-
-              if (results.containsKey('results')) {
-                for (var result in results['results']) {
-                  if (result.containsKey('alternatives') &&
-                      result['alternatives'].isNotEmpty) {
-                    final transcript = result['alternatives'][0]['transcript'];
-                    final speakerTag =
-                        result['speakerTag']; // Assuming speakerTag is available
-
-                    // Format the output by speaker
-                    formattedTranscription +=
-                        "Speaker $speakerTag: $transcript\n";
-                  }
-                }
-              }
-
-              _currentTranscription = formattedTranscription.trim();
-              emit(RecordingTranscriptionReceived(_currentTranscription));
-              isComplete = true;
-            } else {
-              print("No transcription results found in the response.");
-            }
-          } else {
-            print("Transcription operation is still in progress...");
-          }
-        } else {
-          print(
-            "Error checking transcription status: ${response.statusCode}, ${response.body}",
-          );
-        }
-      } catch (error) {
-        print("Error polling transcription results: $error");
-        break;
+  Future<void> _refreshAccessToken() async {
+    try {
+      final account = await _googleSignIn.signInSilently();
+      if (account != null) {
+        final auth = await account.authentication;
+        _accessToken = auth.accessToken;
+      } else {
+        throw Exception('Failed to refresh access token: No account found');
       }
-
-      if (!isComplete) {
-        await Future.delayed(pollInterval);
-        attempts++;
-      }
-    }
-
-    if (!isComplete) {
-      emit(RecordingError('Transcription timed out or failed'));
-      print("Transcription check timed out after $maxAttempts attempts.");
+    } catch (error) {
+      print('Error refreshing access token: ${error.toString()}');
+      emit(
+        RecordingError('Failed to refresh access token: ${error.toString()}'),
+      );
     }
   }
 }

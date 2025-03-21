@@ -28,7 +28,7 @@ class RecordingControls extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            BlocBuilder<RecordingBloc, RecordingState>(
+            BlocBuilder<RecordingBloc, BaseState>(
               builder: (context, state) {
                 if (state is RecordingError) {
                   return Text(
@@ -36,11 +36,11 @@ class RecordingControls extends StatelessWidget {
                     style: TextStyle(color: Colors.red, fontSize: 24),
                   );
                 }
-                if (state is SignedInState) {
+                if (state is Authorized) {
                   return Column(
                     children: [
                       Text(
-                        'Signed in as: ${state.userEmail}',
+                        'Signed in',
                         style: TextStyle(fontSize: 16, color: Colors.green),
                       ),
                       SizedBox(height: 10),
@@ -53,32 +53,37 @@ class RecordingControls extends StatelessWidget {
                     ],
                   );
                 }
-                final bool isNotSignedIn = state is RecordingInitial || state is SignedOutState;
+                final bool isUnauthorized = state is Unauthorized;
                 return ElevatedButton(
                   onPressed: () {
-                    isNotSignedIn ? context.read<RecordingBloc>().add(SignIn()) : null;
+                    isUnauthorized
+                        ? context.read<RecordingBloc>().add(SignIn())
+                        : null;
                   },
                   child: Text('Sign In with Google'),
                 );
               },
             ),
             SizedBox(height: 20),
-            BlocBuilder<RecordingBloc, RecordingState>(
+            BlocBuilder<RecordingBloc, BaseState>(
               builder: (context, state) {
-                final bool isSignedIn = state is SignedInState || state is RecordingError;
+                final bool isReadyToRecord =
+                    state is Authorized &&
+                    state is! RecordingInProgress &&
+                    state is! Processing;
                 final bool isRecording = state is RecordingInProgress;
+                var stateText = switch (state) {
+                  RecordingInProgress _ => 'Recording...',
+                  Processing _ => 'Processing',
+                  _ => 'Not Recording',
+                };
                 return Column(
                   children: [
-                    Text(
-                      state is RecordingInProgress
-                          ? 'Recording...'
-                          : 'Not Recording',
-                      style: TextStyle(fontSize: 24),
-                    ),
+                    Text(stateText, style: TextStyle(fontSize: 24)),
                     SizedBox(height: 20),
                     ElevatedButton(
                       onPressed:
-                          isSignedIn
+                          isReadyToRecord
                               ? () => context.read<RecordingBloc>().add(
                                 StartRecording(),
                               )
@@ -99,9 +104,9 @@ class RecordingControls extends StatelessWidget {
                 );
               },
             ),
-            BlocBuilder<RecordingBloc, RecordingState>(
+            BlocBuilder<RecordingBloc, BaseState>(
               builder: (context, state) {
-                if (state is RecordingTranscriptionReceived) {
+                if (state is TranscriptionReceived) {
                   return Padding(
                     padding: const EdgeInsets.all(20.0),
                     child: Text(
